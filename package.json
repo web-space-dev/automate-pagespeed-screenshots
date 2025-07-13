@@ -1,0 +1,29 @@
+{
+    "name": "pagespeed-screenshot-extension",
+    "version": "1.0.0",
+    "description": "Chrome extension for capturing PageSpeed Insights performance score screenshots",
+    "scripts": {
+        "zip": "zip -r pagespeed-screenshot-extension.zip . -x '*.git*' 'node_modules/*' 'package*.json' '.DS_Store' '*.zip'",
+        "dev": "echo 'Load extension in Chrome: chrome://extensions/ -> Load unpacked'",
+        "test": "echo 'See TESTING.md for comprehensive testing guide'",
+        "icons": "echo 'Open generate-icons.html in browser to create icon files'"
+    },
+    "keywords": [
+        "chrome-extension",
+        "pagespeed",
+        "screenshot",
+        "performance",
+        "lighthouse"
+    ],
+    "author": "Your Name",
+    "license": "MIT",
+    "devDependencies": {},
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/web-space-dev/automate-pagespeed-screenshots.git"
+    },
+    "bugs": {
+        "url": "https://github.com/web-space-dev/automate-pagespeed-screenshots/issues"
+    },
+    "homepage": "https://github.com/web-space-dev/automate-pagespeed-screenshots#readme"
+}
