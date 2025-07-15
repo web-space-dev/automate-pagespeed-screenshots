@@ -1,6 +1,39 @@
 // Background script for PageSpeed Insights Screenshot Extension
 // Handles the browser action click and coordinates screenshot capture
 
+// ========== CONFIGURATION VARIABLES ==========
+// Timeout and timing configuration - adjust these values to fine-tune the extension
+const CONFIG = {
+  // Viewport settings
+  VIEWPORT_WIDTH: 1200,
+  VIEWPORT_HEIGHT: 800,
+  VIEWPORT_WAIT_MS: 500,
+
+  // Device switching timeouts
+  MOBILE_SWITCH_WAIT_MS: 500,
+  DESKTOP_SWITCH_WAIT_MS: 500,
+  DESKTOP_EXTRA_WAIT_MS: 1000,
+
+  // Element visibility timeouts
+  ELEMENT_VISIBILITY_TIMEOUT_MS: 10000,
+  VISIBILITY_CHECK_INTERVAL_MS: 150,
+
+  // Screenshot retry settings
+  SCREENSHOT_RETRY_WAIT_MS: 3000,
+  MIN_SCREENSHOT_SIZE_BYTES: 1000,
+
+  // UI feedback
+  NOTIFICATION_DURATION_MS: 4000,
+  BUTTON_STATE_CHECK_DELAY_MS: 100,
+
+  // Cropping settings
+  TIGHT_PADDING_PX: 5,
+  FALLBACK_PADDING_PX: 10,
+};
+
+console.log("🚀 PageSpeed Screenshot Extension background script loaded");
+console.log("⚙️ Configuration:", CONFIG);
+
 // Check if required APIs are available
 if (!chrome.scripting) {
   console.error(
@@ -38,6 +71,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     try {
       await safeExecuteScript(tab.id, showNotification, [
         "This extension only works on PageSpeed Insights result pages. Go to https://pagespeed.web.dev/",
+        CONFIG.NOTIFICATION_DURATION_MS,
       ]);
     } catch (error) {
       console.error("Could not show notification:", error);
@@ -57,6 +91,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     try {
       await safeExecuteScript(tab.id, showNotification, [
         `Error capturing screenshot: ${error.message}. Check browser console for details.`,
+        CONFIG.NOTIFICATION_DURATION_MS,
       ]);
     } catch (notificationError) {
       console.error("Could not show error notification:", notificationError);
@@ -93,7 +128,7 @@ async function safeExecuteScript(tabId, func, args = []) {
 }
 
 // Function to be injected into the page to find the performance score element
-function getPerformanceScoreElement() {
+function getPerformanceScoreElement(tightPadding = 5, fallbackPadding = 10) {
   // Wait for the results to be loaded
   const checkForElement = () => {
     console.log("🔍 Searching for performance score elements...");
@@ -219,20 +254,65 @@ function getPerformanceScoreElement() {
         }
       }
 
-      const rect = gaugeContainer.getBoundingClientRect();
-      console.log("Final gauge container rect:", rect);
+      // Calculate tight bounds around just the gauge elements themselves
+      const allGauges = gaugeContainer.querySelectorAll(
+        '.lh-gauge, div[class*="lh-gauge"], svg[class*="gauge"], circle[class*="gauge"]'
+      );
 
-      // Make sure we have a valid rectangle
-      if (rect.width > 0 && rect.height > 0) {
-        // Add some minimal padding around the gauges
-        const padding = 10;
-        const adjustedRect = {
+      console.log(
+        `Found ${allGauges.length} individual gauges for tight cropping`
+      );
+
+      let finalRect;
+
+      if (allGauges.length > 0) {
+        // Calculate the bounding box that contains all gauges with minimal padding
+        let minX = Infinity,
+          maxX = -Infinity,
+          minY = Infinity,
+          maxY = -Infinity;
+
+        for (const gauge of allGauges) {
+          const gaugeRect = gauge.getBoundingClientRect();
+          if (gaugeRect.width > 0 && gaugeRect.height > 0) {
+            minX = Math.min(minX, gaugeRect.left);
+            maxX = Math.max(maxX, gaugeRect.right);
+            minY = Math.min(minY, gaugeRect.top);
+            maxY = Math.max(maxY, gaugeRect.bottom);
+          }
+        }
+
+        // Create tight bounding box with minimal padding
+        const tightPaddingPx = tightPadding;
+        finalRect = {
+          x: Math.max(0, minX - tightPaddingPx),
+          y: Math.max(0, minY - tightPaddingPx),
+          width: maxX - minX + tightPaddingPx * 2,
+          height: maxY - minY + tightPaddingPx * 2,
+        };
+
+        console.log(`✅ Calculated tight gauge bounds:`, {
+          individual_gauges: allGauges.length,
+          tight_bounds: finalRect,
+          original_container: gaugeContainer.getBoundingClientRect(),
+        });
+      } else {
+        // Fallback to container bounds with reduced padding
+        const rect = gaugeContainer.getBoundingClientRect();
+        const padding = fallbackPadding;
+        finalRect = {
           x: Math.max(0, rect.x - padding),
           y: Math.max(0, rect.y - padding),
           width: Math.min(window.innerWidth, rect.width + padding * 2),
           height: Math.min(window.innerHeight, rect.height + padding * 2),
         };
+        console.log("⚠️ Using fallback container bounds");
+      }
 
+      console.log("Final gauge container rect:", finalRect);
+
+      // Make sure we have a valid rectangle
+      if (finalRect && finalRect.width > 0 && finalRect.height > 0) {
         // Determine device type from active tab panel
         let deviceType = "unknown";
         const parentPanel = gaugeContainer.closest('[role="tabpanel"]');
@@ -247,7 +327,7 @@ function getPerformanceScoreElement() {
 
         console.log("✅ All scores found!", {
           element: gaugeContainer.tagName + "." + gaugeContainer.className,
-          rect: adjustedRect,
+          rect: finalRect,
           gauges: gauges.length,
           deviceType: deviceType,
           parentPanel: parentPanel
@@ -257,7 +337,7 @@ function getPerformanceScoreElement() {
 
         return {
           found: true,
-          rect: adjustedRect,
+          rect: finalRect,
           element: gaugeContainer.tagName + "." + gaugeContainer.className,
           gaugeCount: gauges.length,
           deviceType: deviceType,
@@ -321,7 +401,7 @@ function cropScreenshotInPage(dataUrl, elementInfo) {
 }
 
 // Function to show notifications to the user
-function showNotification(message) {
+function showNotification(message, notificationDuration = 4000) {
   // Create a temporary notification element
   const notification = document.createElement("div");
   notification.style.cssText = `
@@ -347,16 +427,56 @@ function showNotification(message) {
   notification.textContent = message;
   document.body.appendChild(notification);
 
-  // Remove after 4 seconds
+  // Remove after configured duration
   setTimeout(() => {
     if (notification.parentNode) {
       notification.parentNode.removeChild(notification);
     }
-  }, 4000);
+  }, notificationDuration);
+}
+
+// Function to set a consistent viewport size for predictable screenshots
+function setViewportSize(width, height) {
+  console.log(`📐 Setting viewport to ${width}x${height}...`);
+
+  // Set the window size (this affects the overall viewport)
+  if (window.outerWidth !== width || window.outerHeight !== height) {
+    try {
+      // Try to resize the window if possible
+      window.resizeTo(width, height);
+      console.log(`✅ Window resized to ${width}x${height}`);
+    } catch (error) {
+      console.log(
+        "⚠️ Cannot resize window (likely due to browser restrictions)"
+      );
+    }
+  }
+
+  // Set meta viewport for mobile-like behavior
+  let viewportMeta = document.querySelector('meta[name="viewport"]');
+  if (!viewportMeta) {
+    viewportMeta = document.createElement("meta");
+    viewportMeta.name = "viewport";
+    document.head.appendChild(viewportMeta);
+  }
+
+  viewportMeta.content = `width=${width}, initial-scale=1.0, user-scalable=no`;
+  console.log(`📱 Meta viewport set: ${viewportMeta.content}`);
+
+  return {
+    windowWidth: window.innerWidth,
+    windowHeight: window.innerHeight,
+    outerWidth: window.outerWidth,
+    outerHeight: window.outerHeight,
+  };
 }
 
 // Function to wait for element to be visible with retry logic
-function waitForElementVisible(deviceType, maxWaitTime = 8000) {
+function waitForElementVisible(
+  deviceType,
+  maxWaitTime = 10000,
+  checkInterval = 300
+) {
   return new Promise((resolve, reject) => {
     const startTime = Date.now();
 
@@ -460,7 +580,7 @@ function waitForElementVisible(deviceType, maxWaitTime = 8000) {
       }
 
       // Continue checking
-      setTimeout(checkVisibility, 300);
+      setTimeout(checkVisibility, checkInterval);
     };
 
     checkVisibility();
@@ -473,6 +593,16 @@ async function captureBothScreenshots(tab) {
   const results = [];
 
   console.log("🎬 Starting dual screenshot capture...");
+
+  // Set a consistent viewport size for more predictable screenshots
+  console.log("📐 Setting consistent viewport size...");
+  await safeExecuteScript(tab.id, setViewportSize, [
+    CONFIG.VIEWPORT_WIDTH,
+    CONFIG.VIEWPORT_HEIGHT,
+  ]);
+
+  // Wait for viewport changes to take effect
+  await new Promise((resolve) => setTimeout(resolve, CONFIG.VIEWPORT_WAIT_MS));
 
   for (let i = 0; i < deviceTypes.length; i++) {
     const deviceType = deviceTypes[i];
@@ -487,11 +617,15 @@ async function captureBothScreenshots(tab) {
       console.log(`🔄 Switching to ${deviceType} view...`);
       const switchResult = await safeExecuteScript(tab.id, switchToDeviceView, [
         deviceType,
+        CONFIG.BUTTON_STATE_CHECK_DELAY_MS,
       ]);
       console.log(`Switch to ${deviceType} result:`, switchResult);
 
       // Wait for tab switch to complete
-      const baseWaitTime = deviceType === "desktop" ? 2500 : 1500;
+      const baseWaitTime =
+        deviceType === "desktop"
+          ? CONFIG.DESKTOP_SWITCH_WAIT_MS
+          : CONFIG.MOBILE_SWITCH_WAIT_MS;
       console.log(
         `⏳ Initial wait ${baseWaitTime}ms for ${deviceType} view to load...`
       );
@@ -502,7 +636,11 @@ async function captureBothScreenshots(tab) {
       const elementVisible = await safeExecuteScript(
         tab.id,
         waitForElementVisible,
-        [deviceType, 10000]
+        [
+          deviceType,
+          CONFIG.ELEMENT_VISIBILITY_TIMEOUT_MS,
+          CONFIG.VISIBILITY_CHECK_INTERVAL_MS,
+        ]
       );
       console.log(
         `Element visibility check result for ${deviceType}:`,
@@ -518,14 +656,17 @@ async function captureBothScreenshots(tab) {
       // Additional wait for desktop to ensure content is fully rendered
       if (deviceType === "desktop") {
         console.log("🖥️ Extra wait for desktop content rendering...");
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        await new Promise((resolve) =>
+          setTimeout(resolve, CONFIG.DESKTOP_EXTRA_WAIT_MS)
+        );
       }
 
       // Get element info for this device type
       console.log(`🔍 Getting ${deviceType} element info...`);
       const elementResults = await safeExecuteScript(
         tab.id,
-        getPerformanceScoreElement
+        getPerformanceScoreElement,
+        [CONFIG.TIGHT_PADDING_PX, CONFIG.FALLBACK_PADDING_PX]
       );
 
       if (
@@ -551,7 +692,7 @@ async function captureBothScreenshots(tab) {
         });
 
         // Check if screenshot is valid (not blank)
-        if (!dataUrl || dataUrl.length < 1000) {
+        if (!dataUrl || dataUrl.length < CONFIG.MIN_SCREENSHOT_SIZE_BYTES) {
           throw new Error(
             `Screenshot appears to be blank (${
               dataUrl ? dataUrl.length : 0
@@ -572,14 +713,16 @@ async function captureBothScreenshots(tab) {
         console.log(
           `🔄 Retrying ${deviceType} screenshot after additional wait...`
         );
-        await new Promise((resolve) => setTimeout(resolve, 3000));
+        await new Promise((resolve) =>
+          setTimeout(resolve, CONFIG.SCREENSHOT_RETRY_WAIT_MS)
+        );
 
         dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
           format: "png",
           quality: 100,
         });
 
-        if (!dataUrl || dataUrl.length < 1000) {
+        if (!dataUrl || dataUrl.length < CONFIG.MIN_SCREENSHOT_SIZE_BYTES) {
           throw new Error(`Screenshot retry also failed for ${deviceType}`);
         }
 
@@ -659,11 +802,14 @@ async function captureBothScreenshots(tab) {
     message = `❌ No screenshots captured. Check console for details.`;
   }
 
-  await safeExecuteScript(tab.id, showNotification, [message]);
+  await safeExecuteScript(tab.id, showNotification, [
+    message,
+    CONFIG.NOTIFICATION_DURATION_MS,
+  ]);
 }
 
 // Function to switch between mobile and desktop views
-function switchToDeviceView(targetDeviceType) {
+function switchToDeviceView(targetDeviceType, buttonStateCheckDelay = 100) {
   console.log(`🔄 Attempting to switch to ${targetDeviceType} view...`);
 
   // Look for tab buttons specifically
@@ -769,7 +915,7 @@ function switchToDeviceView(targetDeviceType) {
           }`
         );
       }
-    }, 100);
+    }, buttonStateCheckDelay);
 
     return true;
   } else {
