@@ -1,6 +1,15 @@
 # PageSpeed Insights Screenshot Extension
 
-A Chrome extension that captures screenshots of PageSpeed Insights performance scores.
+A Chrome extension that captures screenshots of PageSpeed Insights performance scores with automatic domain detection and dual device support.
+
+## Features
+
+- 🎯 **Smart Cropping**: Automatically detects and crops just the performance score gauges
+- 📱💻 **Dual Device Support**: Captures both mobile and desktop screenshots automatically
+- 🏷️ **Smart Filename**: Uses the tested domain name extracted from the page
+- ⚡ **High Quality**: Supports device pixel ratio for crisp images
+- 🔔 **User Feedback**: Shows notifications and status updates
+- ⚙️ **Configurable**: Easy-to-adjust timeouts and cropping settings
 
 ## Installation
 
@@ -15,7 +24,24 @@ A Chrome extension that captures screenshots of PageSpeed Insights performance s
 1. Navigate to a PageSpeed Insights results page: `https://pagespeed.web.dev`
 2. Wait for the performance results to fully load
 3. Click the extension icon in the Chrome toolbar
-4. The screenshot will be automatically downloaded as a PNG file
+4. The extension will automatically:
+   - Capture a mobile screenshot
+   - Switch to desktop view
+   - Capture a desktop screenshot
+   - Download both files with descriptive names
+
+## Filename Format
+
+Screenshots are saved with the format:
+
+```
+pagespeed-score-{domain}-{device}-{timestamp}.png
+```
+
+Examples:
+
+- `pagespeed-score-example_com-mobile-2024-01-15T10-30-45.png`
+- `pagespeed-score-example_com-desktop-2024-01-15T10-30-47.png`
 
 ## File Structure
 

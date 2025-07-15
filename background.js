@@ -4,6 +4,9 @@
 // ========== CONFIGURATION VARIABLES ==========
 // Timeout and timing configuration - adjust these values to fine-tune the extension
 const CONFIG = {
+  // Debug mode - set to true to enable verbose logging
+  DEBUG_MODE: true,
+
   // Viewport settings
   VIEWPORT_WIDTH: 1200,
   VIEWPORT_HEIGHT: 800,
@@ -125,6 +128,108 @@ async function safeExecuteScript(tabId, func, args = []) {
 
     throw error;
   }
+}
+
+// Function to extract the tested domain from the page
+function extractTestedDomain() {
+  console.log("🔍 Extracting tested domain from page...");
+
+  // Try to find the domain in various places where PageSpeed Insights displays it
+  const selectors = [
+    // The specific class you mentioned
+    ".Toa1ad",
+    // Other potential PageSpeed Insights selectors
+    '[data-testid="url-display"]',
+    ".lh-text__url",
+    ".lh-header-url",
+    ".url-display",
+    ".lh-audit-group__header .lh-text",
+    // Look for elements with specific content patterns
+    '*[title*="http"]',
+    'a[href*="http"]',
+    // Look in headers and titles
+    "h1, h2, h3, h4",
+    ".lh-header__url",
+    // Any element that might contain the URL
+    '*[class*="url"]',
+    '*[id*="url"]',
+  ];
+
+  for (const selector of selectors) {
+    const elements = document.querySelectorAll(selector);
+    for (const element of elements) {
+      let text =
+        element.textContent ||
+        element.href ||
+        element.getAttribute("title") ||
+        element.getAttribute("data-url") ||
+        "";
+
+      if (!text || text.length < 4) continue; // Skip very short text
+
+      console.log(
+        `Checking element (${selector}): "${text.substring(0, 100)}..."`
+      );
+
+      // Extract domain from URL
+      try {
+        if (text.includes("http")) {
+          const urlMatch = text.match(/https?:\/\/([^\/\s?#]+)/);
+          if (urlMatch) {
+            const domain = urlMatch[1].replace(/^www\./, "");
+            if (domain.includes(".") && domain.length > 3) {
+              console.log(`✅ Extracted domain from URL: ${domain}`);
+              return domain;
+            }
+          }
+        } else if (text.match(/^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/)) {
+          // Might be a clean domain without protocol
+          const domain = text.replace(/^www\./, "");
+          console.log(`✅ Extracted domain (clean): ${domain}`);
+          return domain;
+        }
+      } catch (error) {
+        console.log(`❌ Failed to parse text: ${text.substring(0, 50)}`);
+      }
+    }
+  }
+
+  // Fallback: try to extract from page title
+  const title = document.title;
+  console.log("Checking page title:", title);
+
+  // Look for domain patterns in the title
+  const titleMatch = title.match(/([a-zA-Z0-9-]+\.[a-zA-Z]{2,})/);
+  if (titleMatch) {
+    const domain = titleMatch[1].replace(/^www\./, "");
+    console.log(`✅ Extracted domain from title: ${domain}`);
+    return domain;
+  }
+
+  // Last resort: look for any text that looks like a domain
+  const bodyText = document.body.textContent || "";
+  const domainPattern = /\b([a-zA-Z0-9-]+\.){1,}[a-zA-Z]{2,}\b/g;
+  const matches = bodyText.match(domainPattern);
+  if (matches) {
+    // Filter out common false positives
+    const filtered = matches.filter(
+      (match) =>
+        !match.includes("pagespeed.web.dev") &&
+        !match.includes("google.com") &&
+        !match.includes("web.dev") &&
+        match.length > 4 &&
+        !match.startsWith("www.") // We'll clean www later if needed
+    );
+
+    if (filtered.length > 0) {
+      const domain = filtered[0].replace(/^www\./, "");
+      console.log(`✅ Extracted domain from body text: ${domain}`);
+      return domain;
+    }
+  }
+
+  console.log("❌ Could not extract domain from page");
+  return null;
 }
 
 // Function to be injected into the page to find the performance score element
@@ -746,19 +851,32 @@ async function captureBothScreenshots(tab) {
       const croppedDataUrl = cropResults[0].result;
       console.log(`✅ ${deviceType} screenshot cropped successfully`);
 
-      // Generate filename
-      const url = new URL(tab.url);
-      let domain = url.searchParams.get("url");
+      // Extract domain from page content
+      console.log(`🏷️ Extracting domain for ${deviceType} filename...`);
+      const domainResults = await safeExecuteScript(
+        tab.id,
+        extractTestedDomain
+      );
+      let domain = "pagespeed-result";
 
-      if (domain) {
-        try {
-          const domainUrl = new URL(domain);
-          domain = domainUrl.hostname;
-        } catch {
-          domain = domain.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-        }
+      if (domainResults && domainResults[0] && domainResults[0].result) {
+        domain = domainResults[0].result;
+        console.log(`✅ Domain extracted from page: ${domain}`);
       } else {
-        domain = "pagespeed-result";
+        console.log("⚠️ Could not extract domain from page, using fallback");
+
+        // Fallback to URL parameter method
+        try {
+          const url = new URL(tab.url);
+          const urlParam = url.searchParams.get("url");
+          if (urlParam) {
+            const urlObj = new URL(urlParam);
+            domain = urlObj.hostname;
+            console.log(`✅ Domain extracted from URL parameter: ${domain}`);
+          }
+        } catch (error) {
+          console.log("❌ URL parameter extraction also failed:", error);
+        }
       }
 
       const timestamp = new Date()
@@ -766,10 +884,15 @@ async function captureBothScreenshots(tab) {
         .replace(/[:.]/g, "-")
         .slice(0, 19);
 
-      const filename = `pagespeed-score-${domain.replace(
-        /[^a-zA-Z0-9]/g,
-        "_"
-      )}-${deviceType}-${timestamp}.png`;
+      // Clean domain for filename (remove www., replace special chars with underscores)
+      const cleanDomain = domain
+        .replace(/^www\./, "")
+        .replace(/[^a-zA-Z0-9.-]/g, "_")
+        .replace(/_{2,}/g, "_") // Replace multiple underscores with single
+        .replace(/^_|_$/g, ""); // Remove leading/trailing underscores
+
+      const filename = `pagespeed-score-${cleanDomain}-${deviceType}-${timestamp}.png`;
+      console.log(`📝 Generated filename: ${filename}`);
 
       // Download screenshot
       chrome.downloads.download({
